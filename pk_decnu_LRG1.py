@@ -38,6 +38,7 @@ from synthetic_data_tools import *
 import numpy as np
 import matplotlib.pyplot as plt
 from desilike.theories.galaxy_clustering import DirectSpectrum2Template, FOLPSTracerSpectrum2Poles, FOLPSTracerSpectrum3Poles
+from desilike.theories.galaxy_clustering.template import ScalingScalars, ScalingScalarsEmulator
 from desilike.observables.galaxy_clustering import Spectrum2PolesObservable
 from desilike.emulators import Emulator, Space
 from desilike.likelihoods import ObservablesGaussianLikelihood
@@ -131,6 +132,13 @@ emulator_levels = {'h': 3, 'omega_cdm': 3, 'm_ncdm': 3, 'logGamma_ncdm': 3}
 emulator_budget = 3
 #Expand m_ncdm in sqrt(m_ncdm) (desilike's default expansion variable for the neutrino mass)
 emulator_transforms = {'m_ncdm': 'sqrt'}
+#Nodes where the Boltzmann code fails (or returns non-finite values) are dropped instead of stopping
+#the training, up to this fraction of the node set. When nodes are missing, the Chebyshev interpolation
+#is replaced by a least-squares fit of a smaller basis (budget emulator_budget - 1) to the remaining
+#nodes; with no failed node, the emulator is the full interpolation, as before.
+emulator_max_failed = 0.1
+#Budget of the emulator of the background scalars (f, sigma8, AP distortions) the PT emulator uses
+emulator_scalars_budget = 2
 
 A_full_status= False
 
@@ -500,9 +508,23 @@ if set_emulator:
                 # Emulate the underlying PT calculator, as before (bias parameters are not emulated).
                 # The box comes from each parameter's `fd` limits, intersected with its prior.
                 space = Space(pt, levels=emulator_levels, transforms=emulator_transforms)
-                emulator = Emulator(pt, space, budget=emulator_budget)
+                # The FOLPS PT emulator needs an emulator of the background scalars at run time.
+                # It would train one itself, but without tolerance to failed nodes: train it here
+                # with the same settings, and hand it over.
+                scalars_emulator = Emulator(ScalingScalars(z=z, fiducial=fiducial, cosmo=cosmo.clone()), space,
+                                            cls=ScalingScalarsEmulator, budget=emulator_scalars_budget)
+                print(f"Training the background scalars on {len(scalars_emulator.nodes())} nodes")
+                scalars_emulator.train(checkpoint=checkpoint_filename[:-len('.npz')] + '_scalars.npz', mpicomm=mpicomm,
+                                       drop_non_finite=True, max_non_finite=emulator_max_failed,
+                                       basis_budget=emulator_scalars_budget - 1)
+                emulator = Emulator(pt, space, budget=emulator_budget, scalars=scalars_emulator.to_calculator())
                 print(f"Training on {len(emulator.nodes())} nodes")
-                emulator.train(checkpoint=checkpoint_filename, mpicomm=mpicomm)
+                emulator.train(checkpoint=checkpoint_filename, mpicomm=mpicomm,
+                               drop_non_finite=True, max_non_finite=emulator_max_failed,
+                               basis_budget=emulator_budget - 1)
+                # Saved with the PT emulator, as when it trains its own (otherwise a reloaded
+                # emulator would compute the background scalars with decnuclass at every call)
+                emulator._state_scalars = scalars_emulator.__getstate__()
                 if mpicomm.rank == 0:
                     emulator.write(emulator_filename)
                 mpicomm.Barrier()
