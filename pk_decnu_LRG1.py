@@ -1,3 +1,18 @@
+import os
+# JAX GPU setup, before anything imports JAX. By default each process preallocates 75% of the
+# memory of the first visible GPU, so with several MPI ranks per node all but one run out of
+# memory. Give each rank on a node its own GPU (when several are visible), and allocate on demand.
+try:
+    from mpi4py import MPI
+    local_rank = MPI.COMM_WORLD.Split_type(MPI.COMM_TYPE_SHARED).Get_rank()
+except ImportError:
+    local_rank = 0
+gpus = [gpu for gpu in os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',') if gpu]
+if len(gpus) > 1:
+    os.environ['CUDA_VISIBLE_DEVICES'] = gpus[local_rank % len(gpus)]
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+# os.environ['JAX_PLATFORMS'] = 'cpu'  # or run JAX on CPU only (decnuclass runs on CPU anyway)
+
 import sys
 # sys.path.insert(0, "/global/homes/e/elbers/folps/desilike/desilike")
 # sys.path.insert(0, "/global/homes/e/elbers/decnu_clean/pyclass")
