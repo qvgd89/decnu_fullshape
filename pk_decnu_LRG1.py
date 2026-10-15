@@ -139,6 +139,11 @@ emulator_transforms = {'m_ncdm': 'sqrt'}
 emulator_max_failed = 0.1
 #Budget of the emulator of the background scalars (f, sigma8, AP distortions) the PT emulator uses
 emulator_scalars_budget = 2
+#That emulator fits each scalar as a correction to an analytic (Eisenstein-Hu) core, which cosmoprimo
+#cannot evaluate at a negative m_ncdm. When the box reaches negative masses, m_ncdm is left out of the
+#core (held at the fiducial mass there): the fitted correction then carries the whole m_ncdm dependence.
+#An emulator must be used with the setting it was trained with; the filename records it.
+analytic_core_mass = emulator_limits['m_ncdm'][0] >= 0.
 
 A_full_status= False
 
@@ -475,6 +480,11 @@ for tracer in tracers:
 
 
 
+if set_emulator and not analytic_core_mass:
+    # Leave m_ncdm out of the analytic core of the background-scalar emulator (see analytic_core_mass);
+    # applied whether the emulator is trained or read, since it is used both ways
+    ScalingScalars._ref_update_names = tuple(name for name in ScalingScalars._ref_update_names if name != 'm_ncdm')
+
 if set_emulator:
     for tracer in tracers:
         z=all_tracer_redshifts[tracer]
@@ -483,13 +493,14 @@ if set_emulator:
             pt = theory.pt
 
             # emulator_filename = 'Emulator_test_sims_ps/ps_emu_LRG2_LRG2_0.201_folpsax.npy'
+            emulator_tag = f'cheb{emulator_budget}' + ('' if analytic_core_mass else '_nocoremass')
             # Chebyshev emulators are written as HDF5 (.h5); emulators saved by the previous
             # desilike (.npy, Taylor) cannot be read by the new API and must be retrained
             if comp=='ps':
-                emulator_filename = f'./Emulators/Emulator_{comp}/{comp}_emu_{tracer}_z{z}_{kr_max}_Afull_{A_full_status}_{model}_{synthetic_model}_cheb{emulator_budget}.h5'
+                emulator_filename = f'./Emulators/Emulator_{comp}/{comp}_emu_{tracer}_z{z}_{kr_max}_Afull_{A_full_status}_{model}_{synthetic_model}_{emulator_tag}.h5'
             else:
                 kr_b2_max_label= kr_b2_max if kr_b2_max>0.08 else 0.08
-                emulator_filename = f'./Emulators/Emulator_{comp}/{comp}_emu_{tracer}_z{z}_{kr_max}_{kr_b0_max}_{kr_b2_max_label}_Afull_{A_full_status}_{model}_{synthetic_model}_cheb{emulator_budget}.h5'
+                emulator_filename = f'./Emulators/Emulator_{comp}/{comp}_emu_{tracer}_z{z}_{kr_max}_{kr_b0_max}_{kr_b2_max_label}_Afull_{A_full_status}_{model}_{synthetic_model}_{emulator_tag}.h5'
             # Training checkpoint: an interrupted training resumes from it, and the nested node set
             # means a larger emulator_budget reuses the evaluations already made (same box only)
             checkpoint_filename = emulator_filename[:-len('.h5')] + '_checkpoint.npz'
@@ -517,6 +528,9 @@ if set_emulator:
                 scalars_emulator.train(checkpoint=checkpoint_filename[:-len('.npz')] + '_scalars.npz', mpicomm=mpicomm,
                                        drop_non_finite=True, max_non_finite=emulator_max_failed,
                                        basis_budget=emulator_scalars_budget - 1)
+                if not analytic_core_mass:
+                    # At prediction too, the analytic core must not see m_ncdm
+                    scalars_emulator._anchors['defaults'].pop('m_ncdm', None)
                 emulator = Emulator(pt, space, budget=emulator_budget, scalars=scalars_emulator.to_calculator())
                 print(f"Training on {len(emulator.nodes())} nodes")
                 emulator.train(checkpoint=checkpoint_filename, mpicomm=mpicomm,
